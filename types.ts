@@ -1,405 +1,305 @@
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Image,
-  Pressable,
-  Alert,
-} from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
-import { detectPlateCorners, calculateScaleFromCorners } from '../ml/contours';
-import { CENTAURI_PLATE } from '../constants';
+import * as FileSystem from 'expo-file-system';
+import { Tool, Bin } from './types';
 
-interface CalibrationProps {
-  photoUri: string;
-  onCalibrationComplete: (scale: number, corners: [number, number][]) => void;
-  onCancel: () => void;
+// Gridfinity grid constant: 42mm per unit
+const GRIDFINITY_UNIT = 42;
+
+interface Triangle {
+  normal: [number, number, number];
+  v1: [number, number, number];
+  v2: [number, number, number];
+  v3: [number, number, number];
 }
 
-export function CalibrationUI({ photoUri, onCalibrationComplete, onCancel }: CalibrationProps) {
-  const [mode, setMode] = useState<'method' | 'auto' | 'manual'>('method');
-  const [detectedCorners, setDetectedCorners] = useState<[number, number][] | null>(null);
-  const [selectedCorners, setSelectedCorners] = useState<[number, number][]>([]);
-  const [scale, setScale] = useState<number | null>(null);
-  const [imageLayout, setImageLayout] = useState({ width: 0, height: 0 });
+export async function generateToolSTL(
+  tool: Tool,
+  wallThickness: number = 2,
+  height: number = 10
+): Promise<Uint8Array> {
+  const triangles: Triangle[] = [];
 
-  // Auto-detect corners when entering auto mode
-  useEffect(() => {
-    if (mode === 'auto' && imageLayout.width > 0) {
-      const corners = detectPlateCorners(imageLayout.width, imageLayout.height);
-      if (corners) {
-        setDetectedCorners(corners);
-        const calculatedScale = calculateScaleFromCorners(corners, CENTAURI_PLATE.width);
-        setScale(calculatedScale);
-      }
-    }
-  }, [mode, imageLayout]);
+  // Extrude 2D polygon to 3D walls
+  const vertices = tool.vertices;
 
-  const handleAutoDetectConfirm = () => {
-    if (detectedCorners && scale) {
-      onCalibrationComplete(scale, detectedCorners);
-    }
-  };
+  // Bottom face
+  for (let i = 0; i < vertices.length; i++) {
+    const [x1, y1] = vertices[i];
+    const [x2, y2] = vertices[(i + 1) % vertices.length];
 
-  const handleImagePress = (e: any) => {
-    if (mode !== 'manual') return;
-
-    const { locationX, locationY } = e.nativeEvent;
-    if (selectedCorners.length < 4) {
-      setSelectedCorners([...selectedCorners, [locationX, locationY]]);
-    }
-
-    if (selectedCorners.length === 3) {
-      // User is about to complete selection
-      Alert.alert(
-        'Corner Selection',
-        'Tap once more to complete. Corners should be: Top-Left, Top-Right, Bottom-Right, Bottom-Left',
-        [{ text: 'OK' }]
-      );
-    }
-  };
-
-  const handleManualConfirm = () => {
-    if (selectedCorners.length === 4) {
-      const corners = selectedCorners as [number, number][];
-      const calculatedScale = calculateScaleFromCorners(corners, CENTAURI_PLATE.width);
-      setScale(calculatedScale);
-      onCalibrationComplete(calculatedScale, corners);
-    } else {
-      Alert.alert('Incomplete', `Select 4 corners. You have ${selectedCorners.length}/4`);
-    }
-  };
-
-  const handleReset = () => {
-    setSelectedCorners([]);
-    setDetectedCorners(null);
-    setScale(null);
-    setMode('method');
-  };
-
-  // Method selection screen
-  if (mode === 'method') {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Calibrate with Centauri Build Plate</Text>
-        <Text style={styles.subtitle}>Choose detection method:</Text>
-
-        <Pressable
-          style={styles.methodButton}
-          onPress={() => setMode('auto')}
-        >
-          <MaterialIcons name="auto-fix-high" size={32} color="#2196F3" />
-          <Text style={styles.methodTitle}>Auto-Detect</Text>
-          <Text style={styles.methodDesc}>Automatically detect corners (faster)</Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.methodButton}
-          onPress={() => setMode('manual')}
-        >
-          <MaterialIcons name="touch-app" size={32} color="#4CAF50" />
-          <Text style={styles.methodTitle}>Manual Select</Text>
-          <Text style={styles.methodDesc}>Tap 4 corners for precise calibration</Text>
-        </Pressable>
-
-        <Pressable style={styles.cancelButton} onPress={onCancel}>
-          <Text style={styles.cancelButtonText}>Cancel</Text>
-        </Pressable>
-      </View>
-    );
+    // Inner triangle
+    triangles.push({
+      normal: [0, 0, -1],
+      v1: [x1, y1, 0],
+      v2: [x2, y2, 0],
+      v3: [(x1 + x2) / 2, (y1 + y2) / 2, 0],
+    });
   }
 
-  // Auto-detect screen
-  if (mode === 'auto') {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Auto-Detect Calibration</Text>
+  // Top face (offset up)
+  for (let i = 0; i < vertices.length; i++) {
+    const [x1, y1] = vertices[i];
+    const [x2, y2] = vertices[(i + 1) % vertices.length];
 
-        <Image
-          source={{ uri: photoUri }}
-          style={styles.previewImage}
-          onLayout={(e) => {
-            setImageLayout({
-              width: e.nativeEvent.layout.width,
-              height: e.nativeEvent.layout.height,
-            });
-          }}
-        />
-
-        {detectedCorners && (
-          <View style={styles.cornerIndicators}>
-            {detectedCorners.map((corner, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.cornerDot,
-                  {
-                    left: corner[0] - 8,
-                    top: corner[1] - 8,
-                  },
-                ]}
-              >
-                <Text style={styles.cornerLabel}>{i + 1}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {scale && (
-          <View style={styles.scaleInfo}>
-            <Text style={styles.scaleLabel}>Scale: {scale.toFixed(2)} pixels/mm</Text>
-            <Text style={styles.plateInfo}>
-              Centauri Plate: {CENTAURI_PLATE.width}×{CENTAURI_PLATE.height}mm
-            </Text>
-          </View>
-        )}
-
-        <View style={styles.buttonRow}>
-          <Pressable style={styles.secondaryButton} onPress={handleReset}>
-            <MaterialIcons name="arrow-back" size={20} color="#2196F3" />
-            <Text style={styles.buttonText}>Back</Text>
-          </Pressable>
-
-          <Pressable
-            style={[styles.confirmButton, !scale && styles.buttonDisabled]}
-            onPress={handleAutoDetectConfirm}
-            disabled={!scale}
-          >
-            <MaterialIcons name="check" size={20} color="#fff" />
-            <Text style={styles.confirmButtonText}>Confirm & Continue</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
+    triangles.push({
+      normal: [0, 0, 1],
+      v1: [x1, y1, height],
+      v2: [(x1 + x2) / 2, (y1 + y2) / 2, height],
+      v3: [x2, y2, height],
+    });
   }
 
-  // Manual select screen
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Manual Corner Selection</Text>
-      <Text style={styles.subtitle}>Tap 4 corners: TL → TR → BR → BL</Text>
+  // Walls
+  for (let i = 0; i < vertices.length; i++) {
+    const [x1, y1] = vertices[i];
+    const [x2, y2] = vertices[(i + 1) % vertices.length];
 
-      <Pressable
-        onPress={handleImagePress}
-        style={styles.previewImageContainer}
-      >
-        <Image
-          source={{ uri: photoUri }}
-          style={styles.previewImage}
-          onLayout={(e) => {
-            setImageLayout({
-              width: e.nativeEvent.layout.width,
-              height: e.nativeEvent.layout.height,
-            });
-          }}
-        />
+    // Quad as two triangles
+    // Bottom-inner, bottom-outer, top-inner
+    triangles.push({
+      normal: normalFromPoints([x1, y1, 0], [x2, y2, 0], [x1, y1, height]),
+      v1: [x1, y1, 0],
+      v2: [x2, y2, 0],
+      v3: [x1, y1, height],
+    });
 
-        {/* Render selected corner markers */}
-        {selectedCorners.map((corner, i) => (
-          <View
-            key={i}
-            style={[
-              styles.cornerDot,
-              { left: corner[0] - 8, top: corner[1] - 8 },
-            ]}
-          >
-            <Text style={styles.cornerLabel}>{i + 1}</Text>
-          </View>
-        ))}
-      </Pressable>
+    // Bottom-outer, top-outer, top-inner
+    triangles.push({
+      normal: normalFromPoints([x2, y2, 0], [x2, y2, height], [x1, y1, height]),
+      v1: [x2, y2, 0],
+      v2: [x2, y2, height],
+      v3: [x1, y1, height],
+    });
+  }
 
-      <View style={styles.progressInfo}>
-        <Text style={styles.progressText}>
-          {selectedCorners.length}/4 corners selected
-        </Text>
-        {selectedCorners.length > 0 && (
-          <Pressable onPress={() => setSelectedCorners(selectedCorners.slice(0, -1))}>
-            <MaterialIcons name="undo" size={20} color="#FF9800" />
-          </Pressable>
-        )}
-      </View>
+  return trianglesToBinarySTL(triangles, tool.name);
+}
 
-      {scale && (
-        <View style={styles.scaleInfo}>
-          <Text style={styles.scaleLabel}>Scale: {scale.toFixed(2)} pixels/mm</Text>
-        </View>
-      )}
+export async function generateBinSTL(
+  bin: Bin,
+  tools: Map<string, Tool>
+): Promise<Uint8Array> {
+  const triangles: Triangle[] = [];
 
-      <View style={styles.buttonRow}>
-        <Pressable style={styles.secondaryButton} onPress={handleReset}>
-          <MaterialIcons name="close" size={20} color="#F44336" />
-          <Text style={styles.buttonText}>Reset</Text>
-        </Pressable>
+  // Gridfinity base
+  const width = bin.width * GRIDFINITY_UNIT;
+  const height = bin.height * GRIDFINITY_UNIT;
+  const baseHeight = bin.baseHeight;
 
-        <Pressable
-          style={[styles.confirmButton, selectedCorners.length < 4 && styles.buttonDisabled]}
-          onPress={handleManualConfirm}
-          disabled={selectedCorners.length < 4}
-        >
-          <MaterialIcons name="check" size={20} color="#fff" />
-          <Text style={styles.confirmButtonText}>Confirm & Continue</Text>
-        </Pressable>
-      </View>
-    </View>
+  // Generate base with magnet holes
+  generateGridfinityBase(width, height, baseHeight, bin.wallThickness, triangles);
+
+  // Add tool pockets
+  for (const placement of bin.tools) {
+    const tool = tools.get(placement.toolId);
+    if (tool) {
+      const x = placement.x * GRIDFINITY_UNIT + width / 2;
+      const y = placement.y * GRIDFINITY_UNIT + height / 2;
+
+      // Extrude tool shape as pocket
+      extrudeToolPocket(tool.vertices, x, y, placement.rotation, baseHeight, triangles);
+    }
+  }
+
+  return trianglesToBinarySTL(triangles, bin.name);
+}
+
+function generateGridfinityBase(
+  width: number,
+  height: number,
+  baseHeight: number,
+  wallThickness: number,
+  triangles: Triangle[]
+): void {
+  // Simple rectangular base
+  const depth = baseHeight;
+
+  // Bottom
+  addQuad(
+    triangles,
+    [0, 0, 0],
+    [width, 0, 0],
+    [width, height, 0],
+    [0, height, 0]
+  );
+
+  // Top
+  addQuad(
+    triangles,
+    [0, 0, depth],
+    [0, height, depth],
+    [width, height, depth],
+    [width, 0, depth]
+  );
+
+  // Walls
+  // Front
+  addQuad(
+    triangles,
+    [0, 0, 0],
+    [width, 0, 0],
+    [width, 0, depth],
+    [0, 0, depth]
+  );
+
+  // Back
+  addQuad(
+    triangles,
+    [0, height, 0],
+    [0, height, depth],
+    [width, height, depth],
+    [width, height, 0]
+  );
+
+  // Left
+  addQuad(
+    triangles,
+    [0, 0, 0],
+    [0, 0, depth],
+    [0, height, depth],
+    [0, height, 0]
+  );
+
+  // Right
+  addQuad(
+    triangles,
+    [width, 0, 0],
+    [width, height, 0],
+    [width, height, depth],
+    [width, 0, depth]
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-    padding: 16,
-    justifyContent: 'space-between',
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    color: '#333',
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 20,
-  },
-  methodButton: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-  },
-  methodTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginTop: 12,
-    color: '#333',
-  },
-  methodDesc: {
-    fontSize: 12,
-    color: '#999',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  previewImageContainer: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    overflow: 'hidden',
-    marginBottom: 12,
-    position: 'relative',
-  },
-  previewImage: {
-    flex: 1,
-    resizeMode: 'contain',
-  },
-  cornerIndicators: {
-    position: 'absolute',
-    width: '100%',
-    height: '100%',
-  },
-  cornerDot: {
-    position: 'absolute',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#2196F3',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-    zIndex: 10,
-  },
-  cornerLabel: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  scaleInfo: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#2196F3',
-  },
-  scaleLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#2196F3',
-  },
-  plateInfo: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 4,
-  },
-  progressInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  progressText: {
-    fontSize: 14,
-    color: '#333',
-    fontWeight: '500',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  cancelButton: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    paddingVertical: 12,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  cancelButtonText: {
-    textAlign: 'center',
-    color: '#666',
-    fontWeight: '600',
-  },
-  secondaryButton: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: '#2196F3',
-  },
-  confirmButton: {
-    flex: 1,
-    backgroundColor: '#2196F3',
-    borderRadius: 8,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-  },
-  confirmButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  buttonText: {
-    color: '#2196F3',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-});
+function extrudeToolPocket(
+  vertices: [number, number][],
+  offsetX: number,
+  offsetY: number,
+  rotation: number,
+  baseZ: number,
+  triangles: Triangle[],
+  pocketHeight: number = 8
+): void {
+  // Apply offset and rotation
+  const rotatedVerts = vertices.map(([x, y]) => {
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const rx = x * cos - y * sin;
+    const ry = x * sin + y * cos;
+    return [offsetX + rx, offsetY + ry] as [number, number];
+  });
+
+  // Bottom of pocket
+  for (let i = 0; i < rotatedVerts.length; i++) {
+    const [x1, y1] = rotatedVerts[i];
+    const [x2, y2] = rotatedVerts[(i + 1) % rotatedVerts.length];
+
+    triangles.push({
+      normal: [0, 0, -1],
+      v1: [x1, y1, baseZ],
+      v2: [x2, y2, baseZ],
+      v3: [(x1 + x2) / 2, (y1 + y2) / 2, baseZ],
+    });
+  }
+
+  // Walls of pocket
+  for (let i = 0; i < rotatedVerts.length; i++) {
+    const [x1, y1] = rotatedVerts[i];
+    const [x2, y2] = rotatedVerts[(i + 1) % rotatedVerts.length];
+
+    triangles.push({
+      normal: normalFromPoints([x1, y1, baseZ], [x2, y2, baseZ], [x1, y1, baseZ + pocketHeight]),
+      v1: [x1, y1, baseZ],
+      v2: [x2, y2, baseZ],
+      v3: [x1, y1, baseZ + pocketHeight],
+    });
+
+    triangles.push({
+      normal: normalFromPoints([x2, y2, baseZ], [x2, y2, baseZ + pocketHeight], [x1, y1, baseZ + pocketHeight]),
+      v1: [x2, y2, baseZ],
+      v2: [x2, y2, baseZ + pocketHeight],
+      v3: [x1, y1, baseZ + pocketHeight],
+    });
+  }
+}
+
+function addQuad(
+  triangles: Triangle[],
+  v1: [number, number, number],
+  v2: [number, number, number],
+  v3: [number, number, number],
+  v4: [number, number, number]
+): void {
+  const normal = normalFromPoints(v1, v2, v3);
+  triangles.push({ normal, v1, v2, v3 });
+  triangles.push({ normal, v1: v3, v2: v4, v3: v1 });
+}
+
+function normalFromPoints(
+  v1: [number, number, number],
+  v2: [number, number, number],
+  v3: [number, number, number]
+): [number, number, number] {
+  const edge1 = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]] as [number, number, number];
+  const edge2 = [v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]] as [number, number, number];
+
+  const normal = [
+    edge1[1] * edge2[2] - edge1[2] * edge2[1],
+    edge1[2] * edge2[0] - edge1[0] * edge2[2],
+    edge1[0] * edge2[1] - edge1[1] * edge2[0],
+  ] as [number, number, number];
+
+  const len = Math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2);
+  if (len > 0) {
+    return [normal[0] / len, normal[1] / len, normal[2] / len];
+  }
+  return [0, 0, 1];
+}
+
+function trianglesToBinarySTL(triangles: Triangle[], name: string): Uint8Array {
+  const buffer = new ArrayBuffer(84 + triangles.length * 50);
+  const view = new DataView(buffer);
+  const uint8 = new Uint8Array(buffer);
+
+  // Header (80 bytes)
+  const header = new TextEncoder().encode(name.substring(0, 80).padEnd(80));
+  uint8.set(header);
+
+  // Triangle count (4 bytes, little-endian)
+  view.setUint32(80, triangles.length, true);
+
+  // Triangles
+  let offset = 84;
+  for (const tri of triangles) {
+    // Normal (3 × float32)
+    view.setFloat32(offset, tri.normal[0], true);
+    offset += 4;
+    view.setFloat32(offset, tri.normal[1], true);
+    offset += 4;
+    view.setFloat32(offset, tri.normal[2], true);
+    offset += 4;
+
+    // Vertices (3 vertices × 3 coords × float32)
+    for (const vertex of [tri.v1, tri.v2, tri.v3]) {
+      view.setFloat32(offset, vertex[0], true);
+      offset += 4;
+      view.setFloat32(offset, vertex[1], true);
+      offset += 4;
+      view.setFloat32(offset, vertex[2], true);
+      offset += 4;
+    }
+
+    // Attribute byte count (uint16)
+    view.setUint16(offset, 0, true);
+    offset += 2;
+  }
+
+  return uint8;
+}
+
+export async function saveSTLFile(data: Uint8Array, filename: string): Promise<string> {
+  const filePath = `${FileSystem.documentDirectory}${filename}.stl`;
+  const base64 = Buffer.from(data).toString('base64');
+  await FileSystem.writeAsStringAsync(filePath, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return filePath;
+}
